@@ -151,3 +151,95 @@ def test_update_book_changes_fields_and_persists(client):
     assert saved_book["author"] == "New Author"
 
 
+# ============================================================
+# COMMIT 2: Checkout, loan lookup, and return behavior
+# ============================================================
+
+def test_checkout_creates_loan_and_decreases_available_copies(client):
+    book = create_book(client, total_copies=2)
+    member = create_member(client)
+
+    response = checkout_book(client, book["id"], member["id"])
+
+    assert response.status_code == 201
+    loan = response.get_json()
+    assert loan["book_id"] == book["id"]
+    assert loan["member_id"] == member["id"]
+    assert loan["due_date"] is not None
+    assert loan["return_date"] is None
+
+    book_response = client.get(f"/books/{book['id']}")
+    updated_book = book_response.get_json()
+    assert updated_book["available_copies"] == 1
+
+
+def test_checkout_fails_when_no_copies_are_available(client):
+    """Expected to expose an existing defect in the reference application."""
+    book = create_book(client, total_copies=1)
+    first_member = create_member(client, name="Member One", email="one@example.com")
+    second_member = create_member(client, name="Member Two", email="two@example.com")
+
+    first_checkout = checkout_book(client, book["id"], first_member["id"])
+    assert first_checkout.status_code == 201
+
+    second_checkout = checkout_book(client, book["id"], second_member["id"])
+
+    assert second_checkout.status_code == 400
+
+    book_response = client.get(f"/books/{book['id']}")
+    updated_book = book_response.get_json()
+    assert updated_book["available_copies"] == 0
+
+
+def test_lookup_loans_by_book_id_returns_only_matching_loans(client):
+    first_book = create_book(client, title="Book One", author="A", isbn="1")
+    second_book = create_book(client, title="Book Two", author="B", isbn="2")
+    member = create_member(client)
+
+    first_loan = checkout_book(client, first_book["id"], member["id"]).get_json()
+    checkout_book(client, second_book["id"], member["id"])
+
+    response = client.get(f"/loans?book_id={first_book['id']}")
+
+    assert response.status_code == 200
+    loans = response.get_json()
+    assert len(loans) == 1
+    assert loans[0]["id"] == first_loan["id"]
+    assert loans[0]["book_id"] == first_book["id"]
+
+
+def test_lookup_loans_by_member_id_returns_only_members_loans(client):
+    """Expected to expose the member_id filtering defect in loans.py."""
+    first_book = create_book(client, title="Book One", author="A", isbn="1")
+    second_book = create_book(client, title="Book Two", author="B", isbn="2")
+    first_member = create_member(client, name="Member One", email="one@example.com")
+    second_member = create_member(client, name="Member Two", email="two@example.com")
+
+    expected_loan = checkout_book(client, second_book["id"], first_member["id"]).get_json()
+    checkout_book(client, first_book["id"], second_member["id"])
+
+    response = client.get(f"/loans?member_id={first_member['id']}")
+
+    assert response.status_code == 200
+    loans = response.get_json()
+    assert len(loans) == 1
+    assert loans[0]["id"] == expected_loan["id"]
+    assert loans[0]["member_id"] == first_member["id"]
+
+
+def test_return_book_sets_return_date_and_restores_copy(client):
+    book = create_book(client, total_copies=1)
+    member = create_member(client)
+    loan = checkout_book(client, book["id"], member["id"]).get_json()
+
+    response = client.put(f"/loans/{loan['id']}/return")
+
+    assert response.status_code == 200
+    returned_loan = response.get_json()
+    assert returned_loan["return_date"] == date.today().isoformat()
+
+    book_response = client.get(f"/books/{book['id']}")
+    updated_book = book_response.get_json()
+    assert updated_book["available_copies"] == 1
+
+
