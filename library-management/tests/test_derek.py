@@ -191,3 +191,98 @@ def test_renewal_is_rejected_when_another_member_is_waiting(client):
     assert saved_loan.due_date.isoformat() == original_due_date
 
 
+# ============================================================
+# COMMIT 3: Reservation creation, ordering, and lookup
+# ============================================================
+
+def test_create_reservation_saves_book_and_member(client):
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+
+    checkout_book(client, book["id"], borrower["id"])
+
+    response = create_reservation(client, book["id"], waiting_member["id"])
+
+    assert response.status_code == 201
+    reservation = response.get_json()
+    assert reservation["book_id"] == book["id"]
+    assert reservation["member_id"] == waiting_member["id"]
+    assert reservation["fulfilled"] is False
+
+
+def test_reservations_for_same_book_keep_creation_order(client):
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    first_waiting_member = create_member(client, name="First", email="first@example.com")
+    second_waiting_member = create_member(client, name="Second", email="second@example.com")
+
+    checkout_book(client, book["id"], borrower["id"])
+    create_reservation(client, book["id"], first_waiting_member["id"])
+    create_reservation(client, book["id"], second_waiting_member["id"])
+
+    response = client.get(f"/reservations?book_id={book['id']}")
+
+    assert response.status_code == 200
+    reservations = response.get_json()
+    assert len(reservations) == 2
+    assert reservations[0]["member_id"] == first_waiting_member["id"]
+    assert reservations[1]["member_id"] == second_waiting_member["id"]
+
+
+def test_reserved_book_cannot_be_checked_out_by_different_member(client):
+    """Expected to expose the reservation-bypass defect documented in reservations.py."""
+    book = create_book(client, total_copies=2)
+    first_borrower = create_member(client, name="First Borrower", email="firstborrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+    other_member = create_member(client, name="Other Member", email="other@example.com")
+
+    checkout_book(client, book["id"], first_borrower["id"])
+
+    reservation_response = create_reservation(
+        client,
+        book["id"],
+        waiting_member["id"],
+    )
+    assert reservation_response.status_code == 201
+
+    response = client.post(
+        "/loans",
+        json={
+            "book_id": book["id"],
+            "member_id": other_member["id"],
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_lookup_reservations_filters_by_book_and_member(client):
+    first_book = create_book(client, title="Book One", author="A", isbn="1")
+    second_book = create_book(client, title="Book Two", author="B", isbn="2")
+    first_member = create_member(client, name="First", email="first@example.com")
+    second_member = create_member(client, name="Second", email="second@example.com")
+
+    first_reservation = create_reservation(
+        client,
+        first_book["id"],
+        first_member["id"],
+    ).get_json()
+
+    create_reservation(
+        client,
+        second_book["id"],
+        second_member["id"],
+    )
+
+    book_response = client.get(f"/reservations?book_id={first_book['id']}")
+    assert book_response.status_code == 200
+    book_reservations = book_response.get_json()
+    assert len(book_reservations) == 1
+    assert book_reservations[0]["id"] == first_reservation["id"]
+
+    member_response = client.get(f"/reservations?member_id={first_member['id']}")
+    assert member_response.status_code == 200
+    member_reservations = member_response.get_json()
+    assert len(member_reservations) == 1
+    assert member_reservations[0]["id"] == first_reservation["id"]
