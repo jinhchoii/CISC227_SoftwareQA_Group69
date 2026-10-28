@@ -146,3 +146,48 @@ def test_delete_member_removes_member(client):
     assert get_response.status_code == 404
 
 
+# ============================================================
+# COMMIT 2: Loan renewal behavior
+# ============================================================
+
+def test_renew_loan_extends_due_date_by_fourteen_days(client):
+    book = create_book(client)
+    member = create_member(client)
+    loan = checkout_book(client, book["id"], member["id"])
+
+    original_due_date = datetime.fromisoformat(loan["due_date"]).date()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 200
+    renewed_loan = response.get_json()
+    renewed_due_date = datetime.fromisoformat(renewed_loan["due_date"]).date()
+
+    assert renewed_due_date == original_due_date + timedelta(days=14)
+
+
+def test_renewal_is_rejected_when_another_member_is_waiting(client):
+    """Expected to expose the missing reservation check in renew_loan()."""
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+
+    loan = checkout_book(client, book["id"], borrower["id"])
+
+    reservation_response = create_reservation(
+        client,
+        book["id"],
+        waiting_member["id"],
+    )
+    assert reservation_response.status_code == 201
+
+    original_due_date = loan["due_date"]
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 400
+
+    saved_loan = store.loans[loan["id"]]
+    assert saved_loan.due_date.isoformat() == original_due_date
+
+
