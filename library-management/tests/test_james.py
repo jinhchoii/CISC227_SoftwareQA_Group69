@@ -276,3 +276,56 @@ def test_returned_loan_fine_stops_at_return_date(client):
     assert response.status_code == 200
     fine = response.get_json()
     assert fine["fine_amount"] == 1.25
+
+# ============================================================
+# STEP 3: Checkout availability enhancement
+# ============================================================
+
+def test_checkout_rejects_book_with_zero_available_copies(client):
+    book = create_book(client, total_copies=0)
+    member = create_member(client)
+
+    response = checkout_book(client, book["id"], member["id"])
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "No copies available"
+    assert len(store.loans) == 0
+
+    book_response = client.get(f"/books/{book['id']}")
+    assert book_response.get_json()["available_copies"] == 0
+
+
+def test_failed_checkout_does_not_create_extra_loan(client):
+    book = create_book(client, total_copies=1)
+
+    first_member = create_member(
+        client,
+        name="Member One",
+        email="one@example.com",
+    )
+
+    second_member = create_member(
+        client,
+        name="Member Two",
+        email="two@example.com",
+    )
+
+    first_checkout = checkout_book(
+        client,
+        book["id"],
+        first_member["id"],
+    )
+
+    assert first_checkout.status_code == 201
+
+    second_checkout = checkout_book(
+        client,
+        book["id"],
+        second_member["id"],
+    )
+
+    assert second_checkout.status_code == 400
+    assert len(store.loans) == 1
+
+    book_response = client.get(f"/books/{book['id']}")
+    assert book_response.get_json()["available_copies"] == 0
