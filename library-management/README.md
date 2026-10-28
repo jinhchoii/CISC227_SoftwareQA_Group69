@@ -51,7 +51,7 @@ app working without a REST client, and calls the same in-memory store.
 | GET | `/members/<id>` | Get one member |
 | PUT | `/members/<id>` | Update a member |
 | DELETE | `/members/<id>` | Delete a member |
-| POST | `/loans` | Check out a book (`book_id`, `member_id`) |
+| POST | `/loans` | Check out an available book (`book_id`, `member_id`); returns 400 if no copies are available |
 | PUT | `/loans/<id>/return` | Return a loaned book |
 | PUT | `/loans/<id>/renew` | Extend an active loan by 14 days if no other member has an unfulfilled reservation for the book |
 | GET | `/loans?member_id=&book_id=` | Look up loans |
