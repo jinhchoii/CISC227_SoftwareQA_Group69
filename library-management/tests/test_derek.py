@@ -1,0 +1,288 @@
+from datetime import datetime, timedelta
+
+from app import store
+
+
+def create_book(client, title="Clean Code", author="Robert C. Martin", isbn="978-0132350884", total_copies=1):
+    response = client.post(
+        "/books",
+        json={
+            "title": title,
+            "author": author,
+            "isbn": isbn,
+            "total_copies": total_copies,
+        },
+    )
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def create_member(client, name="Derek", email="derek@example.com"):
+    response = client.post(
+        "/members",
+        json={
+            "name": name,
+            "email": email,
+        },
+    )
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def checkout_book(client, book_id, member_id):
+    response = client.post(
+        "/loans",
+        json={
+            "book_id": book_id,
+            "member_id": member_id,
+        },
+    )
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def create_reservation(client, book_id, member_id):
+    response = client.post(
+        "/reservations",
+        json={
+            "book_id": book_id,
+            "member_id": member_id,
+        },
+    )
+    return response
+
+
+# ============================================================
+# COMMIT 1: Book deletion and member management
+# ============================================================
+
+def test_delete_book_removes_book(client):
+    book = create_book(client)
+
+    response = client.delete(f"/books/{book['id']}")
+
+    assert response.status_code == 204
+
+    get_response = client.get(f"/books/{book['id']}")
+    assert get_response.status_code == 404
+
+
+def test_list_members_returns_all_created_members(client):
+    first_member = create_member(client, name="Alice", email="alice@example.com")
+    second_member = create_member(client, name="Bob", email="bob@example.com")
+
+    response = client.get("/members")
+
+    assert response.status_code == 200
+    members = response.get_json()
+    assert len(members) == 2
+    assert members[0]["id"] == first_member["id"]
+    assert members[1]["id"] == second_member["id"]
+
+
+def test_add_member_saves_expected_fields(client):
+    response = client.post(
+        "/members",
+        json={
+            "name": "Derek",
+            "email": "derek@example.com",
+        },
+    )
+
+    assert response.status_code == 201
+    member = response.get_json()
+    assert member["name"] == "Derek"
+    assert member["email"] == "derek@example.com"
+    assert member["membership_date"] is not None
+
+    saved_response = client.get(f"/members/{member['id']}")
+    assert saved_response.status_code == 200
+    assert saved_response.get_json()["name"] == "Derek"
+
+
+def test_view_one_member_returns_requested_member(client):
+    first_member = create_member(client, name="Alice", email="alice@example.com")
+    create_member(client, name="Bob", email="bob@example.com")
+
+    response = client.get(f"/members/{first_member['id']}")
+
+    assert response.status_code == 200
+    member = response.get_json()
+    assert member["id"] == first_member["id"]
+    assert member["name"] == "Alice"
+    assert member["email"] == "alice@example.com"
+
+
+def test_update_member_changes_fields_and_persists(client):
+    member = create_member(client, name="Old Name", email="old@example.com")
+
+    response = client.put(
+        f"/members/{member['id']}",
+        json={
+            "name": "New Name",
+            "email": "new@example.com",
+        },
+    )
+
+    assert response.status_code == 200
+    updated_member = response.get_json()
+    assert updated_member["name"] == "New Name"
+    assert updated_member["email"] == "new@example.com"
+
+    saved_response = client.get(f"/members/{member['id']}")
+    saved_member = saved_response.get_json()
+    assert saved_member["name"] == "New Name"
+    assert saved_member["email"] == "new@example.com"
+
+
+def test_delete_member_removes_member(client):
+    member = create_member(client)
+
+    response = client.delete(f"/members/{member['id']}")
+
+    assert response.status_code == 204
+
+    get_response = client.get(f"/members/{member['id']}")
+    assert get_response.status_code == 404
+
+
+# ============================================================
+# COMMIT 2: Loan renewal behavior
+# ============================================================
+
+def test_renew_loan_extends_due_date_by_fourteen_days(client):
+    book = create_book(client)
+    member = create_member(client)
+    loan = checkout_book(client, book["id"], member["id"])
+
+    original_due_date = datetime.fromisoformat(loan["due_date"]).date()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 200
+    renewed_loan = response.get_json()
+    renewed_due_date = datetime.fromisoformat(renewed_loan["due_date"]).date()
+
+    assert renewed_due_date == original_due_date + timedelta(days=14)
+
+
+def test_renewal_is_rejected_when_another_member_is_waiting(client):
+    """Expected to expose the missing reservation check in renew_loan()."""
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+
+    loan = checkout_book(client, book["id"], borrower["id"])
+
+    reservation_response = create_reservation(
+        client,
+        book["id"],
+        waiting_member["id"],
+    )
+    assert reservation_response.status_code == 201
+
+    original_due_date = loan["due_date"]
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 400
+
+    saved_loan = store.loans[loan["id"]]
+    assert saved_loan.due_date.isoformat() == original_due_date
+
+
+# ============================================================
+# COMMIT 3: Reservation creation, ordering, and lookup
+# ============================================================
+
+def test_create_reservation_saves_book_and_member(client):
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+
+    checkout_book(client, book["id"], borrower["id"])
+
+    response = create_reservation(client, book["id"], waiting_member["id"])
+
+    assert response.status_code == 201
+    reservation = response.get_json()
+    assert reservation["book_id"] == book["id"]
+    assert reservation["member_id"] == waiting_member["id"]
+    assert reservation["fulfilled"] is False
+
+
+def test_reservations_for_same_book_keep_creation_order(client):
+    book = create_book(client)
+    borrower = create_member(client, name="Borrower", email="borrower@example.com")
+    first_waiting_member = create_member(client, name="First", email="first@example.com")
+    second_waiting_member = create_member(client, name="Second", email="second@example.com")
+
+    checkout_book(client, book["id"], borrower["id"])
+    create_reservation(client, book["id"], first_waiting_member["id"])
+    create_reservation(client, book["id"], second_waiting_member["id"])
+
+    response = client.get(f"/reservations?book_id={book['id']}")
+
+    assert response.status_code == 200
+    reservations = response.get_json()
+    assert len(reservations) == 2
+    assert reservations[0]["member_id"] == first_waiting_member["id"]
+    assert reservations[1]["member_id"] == second_waiting_member["id"]
+
+
+def test_reserved_book_cannot_be_checked_out_by_different_member(client):
+    """Expected to expose the reservation-bypass defect documented in reservations.py."""
+    book = create_book(client, total_copies=2)
+    first_borrower = create_member(client, name="First Borrower", email="firstborrower@example.com")
+    waiting_member = create_member(client, name="Waiting Member", email="waiting@example.com")
+    other_member = create_member(client, name="Other Member", email="other@example.com")
+
+    checkout_book(client, book["id"], first_borrower["id"])
+
+    reservation_response = create_reservation(
+        client,
+        book["id"],
+        waiting_member["id"],
+    )
+    assert reservation_response.status_code == 201
+
+    response = client.post(
+        "/loans",
+        json={
+            "book_id": book["id"],
+            "member_id": other_member["id"],
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_lookup_reservations_filters_by_book_and_member(client):
+    first_book = create_book(client, title="Book One", author="A", isbn="1")
+    second_book = create_book(client, title="Book Two", author="B", isbn="2")
+    first_member = create_member(client, name="First", email="first@example.com")
+    second_member = create_member(client, name="Second", email="second@example.com")
+
+    first_reservation = create_reservation(
+        client,
+        first_book["id"],
+        first_member["id"],
+    ).get_json()
+
+    create_reservation(
+        client,
+        second_book["id"],
+        second_member["id"],
+    )
+
+    book_response = client.get(f"/reservations?book_id={first_book['id']}")
+    assert book_response.status_code == 200
+    book_reservations = book_response.get_json()
+    assert len(book_reservations) == 1
+    assert book_reservations[0]["id"] == first_reservation["id"]
+
+    member_response = client.get(f"/reservations?member_id={first_member['id']}")
+    assert member_response.status_code == 200
+    member_reservations = member_response.get_json()
+    assert len(member_reservations) == 1
+    assert member_reservations[0]["id"] == first_reservation["id"]
