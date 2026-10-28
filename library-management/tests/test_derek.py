@@ -286,3 +286,110 @@ def test_lookup_reservations_filters_by_book_and_member(client):
     member_reservations = member_response.get_json()
     assert len(member_reservations) == 1
     assert member_reservations[0]["id"] == first_reservation["id"]
+
+
+# Step 3: Reservation-aware renewal (Table A: R23 and R24)
+
+def test_blocked_renewal_preserves_loan_book_and_reservation(client):
+    book = create_book(client)
+    borrower = create_member(client)
+    waiting = create_member(client, name="Waiting", email="waiting@example.com")
+    loan = checkout_book(client, book["id"], borrower["id"])
+    reservation = create_reservation(client, book["id"], waiting["id"]).get_json()
+    book_before = client.get(f"/books/{book['id']}").get_json()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Another member is waiting for this book"}
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [loan]
+    assert client.get(f"/books/{book['id']}").get_json() == book_before
+    assert client.get(f"/reservations?book_id={book['id']}").get_json() == [reservation]
+
+
+def test_renewal_ignores_fulfilled_hold_and_persists_new_due_date(client):
+    book = create_book(client)
+    borrower = create_member(client)
+    waiting = create_member(client, name="Waiting", email="waiting@example.com")
+    loan = checkout_book(client, book["id"], borrower["id"])
+    reservation = create_reservation(client, book["id"], waiting["id"]).get_json()
+    store.reservations[reservation["id"]].fulfilled = True
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 200
+    expected_due_date = (
+        datetime.fromisoformat(loan["due_date"]).date() + timedelta(days=14)
+    ).isoformat()
+    assert response.get_json()["due_date"] == expected_due_date
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [response.get_json()]
+    assert client.get(f"/books/{book['id']}").get_json()["available_copies"] == 0
+    assert client.get(f"/reservations?book_id={book['id']}").get_json()[0]["fulfilled"] is True
+
+
+def test_renewal_ignores_borrowers_own_hold(client):
+    book = create_book(client)
+    borrower = create_member(client)
+    loan = checkout_book(client, book["id"], borrower["id"])
+    reservation = create_reservation(client, book["id"], borrower["id"]).get_json()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.get_json()["due_date"]).date() == (
+        datetime.fromisoformat(loan["due_date"]).date() + timedelta(days=14)
+    )
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [response.get_json()]
+    assert client.get(f"/reservations?book_id={book['id']}").get_json() == [reservation]
+
+
+def test_renewal_ignores_other_books_hold(client):
+    book = create_book(client)
+    other_book = create_book(client, title="Other Book", isbn="other")
+    borrower = create_member(client)
+    waiting = create_member(client, name="Waiting", email="waiting@example.com")
+    loan = checkout_book(client, book["id"], borrower["id"])
+    checkout_book(client, other_book["id"], borrower["id"])
+    reservation = create_reservation(client, other_book["id"], waiting["id"]).get_json()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.get_json()["due_date"]).date() == (
+        datetime.fromisoformat(loan["due_date"]).date() + timedelta(days=14)
+    )
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [response.get_json()]
+    assert client.get(f"/reservations?book_id={other_book['id']}").get_json() == [reservation]
+
+
+def test_renewal_still_rejects_when_later_hold_is_unfulfilled(client):
+    book = create_book(client)
+    borrower = create_member(client)
+    first_waiter = create_member(client, name="First", email="first@example.com")
+    second_waiter = create_member(client, name="Second", email="second@example.com")
+    loan = checkout_book(client, book["id"], borrower["id"])
+    first_hold = create_reservation(client, book["id"], first_waiter["id"]).get_json()
+    store.reservations[first_hold["id"]].fulfilled = True
+    second_hold = create_reservation(client, book["id"], second_waiter["id"]).get_json()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Another member is waiting for this book"
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [loan]
+    assert store.reservations[second_hold["id"]].fulfilled is False
+
+
+def test_returned_loan_cannot_be_renewed_and_due_date_is_unchanged(client):
+    book = create_book(client)
+    borrower = create_member(client)
+    loan = checkout_book(client, book["id"], borrower["id"])
+    returned = client.put(f"/loans/{loan['id']}/return").get_json()
+
+    response = client.put(f"/loans/{loan['id']}/renew")
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Loan already returned"}
+    assert client.get(f"/loans?book_id={book['id']}").get_json() == [returned]
+    assert returned["due_date"] == loan["due_date"]
+    assert client.get(f"/books/{book['id']}").get_json()["available_copies"] == 1

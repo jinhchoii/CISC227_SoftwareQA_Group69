@@ -53,10 +53,39 @@ app working without a REST client, and calls the same in-memory store.
 | DELETE | `/members/<id>` | Delete a member |
 | POST | `/loans` | Check out a book (`book_id`, `member_id`) |
 | PUT | `/loans/<id>/return` | Return a loaned book |
+| PUT | `/loans/<id>/renew` | Extend an active loan by 14 days if no other member has an unfulfilled reservation for the book |
 | GET | `/loans?member_id=&book_id=` | Look up loans |
+
+## Reservation-aware renewal (R23 and R24)
+
+`PUT /loans/<id>/renew` takes no request body. A successful renewal returns
+HTTP 200 with the loan, and adds 14 days to its existing due date. The updated
+date is saved and appears in subsequent loan lookups.
+
+If another member has an unfulfilled reservation for the same book, renewal
+returns HTTP 400 with `{"error": "Another member is waiting for this book"}`.
+The loan, book availability, and reservations are unchanged. Fulfilled
+reservations, reservations for other books, and the borrower's own reservation
+do not block renewal. Any unfulfilled hold by another member blocks renewal,
+even if an earlier hold has already been fulfilled.
+
+A missing loan returns HTTP 404 (`Loan not found`); a returned loan returns
+HTTP 400 (`Loan already returned`). This enhancement uses the existing API
+and reservation `fulfilled` state; it does not add a reservation-fulfillment
+endpoint or enforce the checkout hold queue.
+
+This completes renewal requirements R23 (partially exists in Table A) and R24
+(does not exist in Table A). Priority classification must be taken from the
+group's Assignment 1 requirements when preparing Table C.
 
 ## Tests
 
 ```bash
-pytest
+python -m pytest -v
 ```
+
+The Step 3 renewal tests in `tests/test_derek.py` verify blocked renewal state,
+fulfilled holds, the borrower's own hold, other books' holds, a later waiting
+member, and returned loans. The existing no-hold renewal test also verifies
+the 14-day extension. Unrelated documented Step 2 defects may still fail the
+full suite; they are not suppressed or marked as expected failures.

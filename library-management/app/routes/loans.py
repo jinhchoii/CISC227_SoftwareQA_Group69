@@ -65,6 +65,15 @@ def renew_loan(loan_id):
     if loan.return_date is not None:
         return jsonify({"error": "Loan already returned"}), 400
 
+    another_member_waiting = any(
+        reservation.book_id == loan.book_id
+        and reservation.member_id != loan.member_id
+        and not reservation.fulfilled
+        for reservation in store.reservations.values()
+    )
+    if another_member_waiting:
+        return jsonify({"error": "Another member is waiting for this book"}), 400
+
     loan.due_date = loan.due_date + timedelta(days=LOAN_PERIOD_DAYS)
     return jsonify(loan.to_dict())
 
