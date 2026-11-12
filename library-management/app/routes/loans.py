@@ -5,6 +5,8 @@ from flask import Blueprint, jsonify, request
 from app import store
 from app.models.loan import Loan, LOAN_PERIOD_DAYS
 
+from notification_service import send_notification
+
 FINE_PER_DAY = 0.25  # dollars charged per day overdue
 
 loans_bp = Blueprint("loans", __name__, url_prefix="/loans")
@@ -48,14 +50,38 @@ def checkout_book():
 @loans_bp.route("/<int:loan_id>/return", methods=["PUT"])
 def return_book(loan_id):
     loan = store.loans.get(loan_id)
+
     if loan is None:
         return jsonify({"error": "Loan not found"}), 404
+
     if loan.return_date is not None:
         return jsonify({"error": "Loan already returned"}), 400
 
     loan.return_date = date.today()
+
     book = store.books.get(loan.book_id)
     book.available_copies += 1
+
+    waiting_reservation = None
+
+    for reservation in store.reservations.values():
+        if reservation.book_id == loan.book_id and not reservation.fulfilled:
+            waiting_reservation = reservation
+            break
+
+    if waiting_reservation is not None:
+        member = store.members.get(waiting_reservation.member_id)
+
+        notification_sent = send_notification(
+            member.email,
+            "Reserved book now available",
+            "The book you reserved is now available for pickup.",
+        )
+
+        response = loan.to_dict()
+        response["notification_sent"] = notification_sent
+
+        return jsonify(response)
 
     return jsonify(loan.to_dict())
 
