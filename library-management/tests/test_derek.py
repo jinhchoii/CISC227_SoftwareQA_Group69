@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+import pytest
+
 from app import store
 
 
@@ -230,6 +232,7 @@ def test_reservations_for_same_book_keep_creation_order(client):
     assert reservations[1]["member_id"] == second_waiting_member["id"]
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="Known A2 defect: checkout ignores another member's reservation")
 def test_reserved_book_cannot_be_checked_out_by_different_member(client):
     """Expected to expose the reservation-bypass defect documented in reservations.py."""
     book = create_book(client, total_copies=2)
