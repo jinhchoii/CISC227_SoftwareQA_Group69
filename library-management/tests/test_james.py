@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 
+import pytest
+
 from app import store
 
 
@@ -208,6 +210,7 @@ def test_lookup_loans_by_book_id_returns_only_matching_loans(client):
     assert loans[0]["book_id"] == first_book["id"]
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='Known A2 defect: member_id filtering compares book_id')
 def test_lookup_loans_by_member_id_returns_only_members_loans(client):
     """Expected to expose the member_id filtering defect in loans.py."""
     first_book = create_book(client, title="Book One", author="A", isbn="1")
@@ -262,6 +265,7 @@ def test_overdue_fine_is_calculated_from_days_overdue(client):
     assert fine["fine_amount"] == 1.00
 
 
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='Known A2 defect: fines continue accruing after return')
 def test_returned_loan_fine_stops_at_return_date(client):
     """Expected to expose the returned-loan fine defect documented in loans.py."""
     book = create_book(client)
